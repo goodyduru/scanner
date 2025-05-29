@@ -79,6 +79,7 @@ class MultiSelectField(models.CharField):
         """
         if value is None or len(value) == 0:
             return None
+        value = sorted(value)
         return ",".join(value)
 
     def value_to_string(self, obj):

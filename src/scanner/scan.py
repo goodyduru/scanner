@@ -1,5 +1,7 @@
 import datetime
-import json
+
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
 from prowler.lib.check.check import execute, import_check
 from prowler.lib.check.checks_loader import load_checks_to_execute
 from prowler.lib.check.compliance import update_checks_metadata_with_compliance
@@ -9,12 +11,17 @@ from prowler.lib.cli.parser import ProwlerArgumentParser
 from prowler.lib.logger import logger, set_logging_config
 from prowler.lib.outputs.finding import Finding
 from prowler.lib.outputs.ocsf.ocsf import OCSF
-from prowler.providers.common.provider import Provider
+from prowler.providers.common import provider as provider_module
 from prowler.providers.common.models import Audit_Metadata
 
-from scanner.models import Check, Finding as FindingModel
+from scanner.models import Check, Finding as FindingModel, Scan
 
-def scan(provider, severities):
+CHANNEL_LAYER = get_channel_layer()
+
+def raise_instead_of_error(code):
+    raise RuntimeError(code)
+
+def scan(scan_id, provider, severities):
     parser = ProwlerArgumentParser()
     args = parser.parse(args=["prowler", provider])
     set_logging_config(args.log_level, args.log_file, args.only_logs)
@@ -36,13 +43,22 @@ def scan(provider, severities):
         provider=provider,
     )
 
-    Provider.init_global_provider(args)
-    global_provider = Provider.get_global_provider()
+    """
+        Validate that the config is valid. This function calls sys.exit when an error is raised.
+        We want an error to be raised instead. In order to get that, we'll monkey-patch the
+        sys.exit function.
+    """
+    provider_module.sys.exit = raise_instead_of_error
+    try:
+        provider_module.Provider.init_global_provider(args)
+    except RuntimeError:
+        return None
+    global_provider = provider_module.Provider.get_global_provider()
     checks_to_execute = sorted(checks_to_execute)
-    checks_to_execute = checks_to_execute[:10]
     result = []
     if len(checks_to_execute):
         result = execute_checks(
+            scan_id,
             checks_to_execute,
             global_provider,
         )
@@ -52,7 +68,7 @@ def scan(provider, severities):
         )
     return result
 
-def execute_checks(checks_to_execute, global_provider):
+def execute_checks(room_name, checks_to_execute, global_provider):
     # List to store all the check's findings
     global_provider.audit_metadata = Audit_Metadata(
         services_scanned=0,
@@ -61,6 +77,8 @@ def execute_checks(checks_to_execute, global_provider):
         audit_progress=0,
     )
     result = {}
+    num_of_checks = len(checks_to_execute)
+    check_executed = 0
 
     for check_name in checks_to_execute:
         # Recover service from check name
@@ -84,7 +102,7 @@ def execute_checks(checks_to_execute, global_provider):
                 None,
                 None,
             )
-            checker['check'] = {"Check ID": check.CheckID, "ServiceName": check.ServiceName, "Severity": check.Severity.value}
+            checker['check'] = {"ServiceName": check.ServiceName, "Severity": check.Severity.value}
             finding_outputs = []
             for finding in check_findings:
                 try:
@@ -97,11 +115,22 @@ def execute_checks(checks_to_execute, global_provider):
                 findings=finding_outputs,
                 file_path=""
             )
-            json_output = [finding.json() for finding in json_output.data]
-            checker['findings'] = json_output
+            outputs = [
+                {
+                    "message": finding.message, 
+                    "title": finding.finding_info.title, 
+                    "resource_name": finding.resources[0].name, 
+                    "resource_type": finding.resources[0].type,
+                    "risk": finding.risk_details,
+                    "remediation": finding.remediation.desc
+                } 
+                for finding in json_output.data
+            ]
+            checker['findings'] = outputs
             result[check_name] = checker
-            
-
+            check_executed += 1
+            # Send progress message with percentage
+            send_ws_message(room_name, {"status": "in_progress", "progress": f"{round(100 * check_executed/num_of_checks, 2)}%"})
         # If check does not exists in the provider or is from another provider
         except ModuleNotFoundError:
             print(
@@ -113,25 +142,41 @@ def execute_checks(checks_to_execute, global_provider):
             )
     return result
 
-def run_scan(scan_obj):
-    scan_obj.start = datetime.datetime.now()
+def run_scan(scan_id):
+    # We mark the scan as in progress.
+    scan_obj = Scan.objects.get(pk=scan_id)
+    scan_obj.start = datetime.datetime.now(datetime.timezone.utc)
     scan_obj.status = "in_progress"
     scan_obj.save()
-    result = scan(scan_obj.provider, scan_obj.severities)
-    scan_obj.end = datetime.datetime.now()
+    room_name = f"scan_id_{scan_id}"
+    send_ws_message(room_name, {"status": scan_obj.status})
+    result = scan(room_name, scan_obj.provider, scan_obj.severities)
+    scan_obj.end = datetime.datetime.now(datetime.timezone.utc)
+
+    # Mark the scan as failed if we had an error or there's no result
+    if result is None or len(result) == 0:
+        scan_obj.status = "failed"
+        scan_obj.save()
+        send_ws_message(room_name, {"status": scan_obj.status})
+        return
+
+    # Get checks and findings and store them in the db
     if len(result) > 0:
         checks = []
         for key, value in result.items():
-            check = Check(scan=scan_obj, name=key, details=value["check"])
+            check = Check(scan=scan_obj, name=key, service_name=value["check"]["ServiceName"], severity=value["check"]["Severity"])
             checks.append(check)
         check_objs = Check.objects.bulk_create(checks)
 
         all_findings = []
         for obj in check_objs:
             for details in result[obj.name]['findings']:
-                # Have to convert a json string back to a dictionary because the jsonfield can't directly serialize pydantic dict 
-                all_findings.append(FindingModel(scan_check=obj, details=json.loads(details)))
+                all_findings.append(FindingModel(scan_check=obj, **details))
         
         FindingModel.objects.bulk_create(all_findings)
     scan_obj.status = "completed"
     scan_obj.save()
+    send_ws_message(room_name, {"status": scan_obj.status})
+
+def send_ws_message(room_name, message):
+    async_to_sync(CHANNEL_LAYER.group_send)(room_name, {"type": "chat.message", "message": message})

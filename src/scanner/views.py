@@ -1,8 +1,9 @@
 from rest_framework import viewsets
 from rest_framework.decorators import action
+from rest_framework.response import Response
 from scanner.models import Scan, Check, Finding, SEVERITIES
 from scanner.serializers import ScanSerializer, CheckSerializer, FindingSerializer
-from scanner.scan import run_scan
+from scanner.tasks import run_scan_task
 
 # Create your views here.
 class ScanViewSet(viewsets.ModelViewSet):
@@ -20,7 +21,7 @@ class ScanViewSet(viewsets.ModelViewSet):
             scan = serializer.save(status='pending', severities=set(SEVERITIES))
         else:
             scan = serializer.save(status='pending')
-        run_scan(scan)
+        run_scan_task.delay(scan.pk)
 
 
 
