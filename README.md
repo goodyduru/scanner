@@ -1,6 +1,8 @@
 ## Description
 This repository contains the app that manages a Prowler scan. It **does not** work for all the providers supported by Prowler though.
 
+This project uses the foundation of the Prowler CLI tool as a library. The scan.py module calls a subset of the functions and classes called by [prowler()](https://github.com/prowler-cloud/prowler/blob/master/prowler/__main__.py#L106)
+
 ## Components
 This app is made up of the following components:
 * The JSON API, which is an API built with Django Rest Framework.
@@ -15,7 +17,7 @@ Ensure you have Python and [Redis](https://redis.io/) installed on your computer
 **Note:** This app should not be used in production.
 
 ### Environmental Variables
-Use the .env.example in the root path as template to set values in a .env file for your environmental variables. This .env file must be created by you. To load variables in your .env file, run this:
+Use the .env.example in the root path as template to set values in a .env file for your environmental variables. This .env file must be created by you. To load variables from your .env file, run this:
 ```sh
 set -a
 source .env
@@ -101,7 +103,7 @@ The above command will return the status of the scan. The status will either be 
 #### WebSocket
 I recommend the use of [wscat](https://github.com/websockets/wscat) to monitor a scan using WebSocket.
 
-To use wscat, ensure that `DJANGO_ALLOWED_HOSTS` environmental variable for the server and celery worker is set to *.
+To use wscat, ensure the `DJANGO_ALLOWED_HOSTS` environmental variable for the server and celery worker is set to *.
 
 Monitoring using wscat is simple. You just have to run:
 ```sh
@@ -118,7 +120,11 @@ Here's an example output:
 < {"message": {"status": "in_progress", "progress": "0.9%"}}
 < {"message": {"status": "in_progress", "progress": "1.19%"}}
 < {"message": {"status": "in_progress", "progress": "1.49%"}}
-...truncated output...
+...others...
+< {"message": {"status": "in_progress", "progress": "99.4%"}}
+< {"message": {"status": "in_progress", "progress": "99.7%"}}
+< {"message": {"status": "in_progress", "progress": "100.0%"}}
+< {"message": {"status": "completed"}}
 ```
 ## Testing
 To run tests, simply execute this:
