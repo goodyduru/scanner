@@ -96,7 +96,7 @@ With http, you can check your scan status using curl like this:
 ```sh
 curl -H "Content-Type: application/json"  http://localhost:8000/scans/{scan_id}/status/
 ```
-**{scan_id}** is the id of the scan you want to monitor. This is the value of the `id` key in the json response when you run a scan.
+**{scan_id}** represents the monitored scan id. This is the value of the `id` key in the json response when you run a scan.
 
 The above command will return the status of the scan. The status will either be `pending`, `in_progress`, `completed`, or `failed`.
 
@@ -109,7 +109,7 @@ Monitoring using wscat is simple. You just have to run:
 ```sh
 wscat --connect 127.0.0.1:8000/ws/scans/{scan_id}/
 ```
-Again, **{scan_id}** is the id of the scan you want to monitor.
+Again, **{scan_id}** represents the monitored scan id.
 
 Here's an example output:
 ```sh
